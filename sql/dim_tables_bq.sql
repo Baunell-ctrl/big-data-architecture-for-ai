@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE shopflow.dim_date AS
+CREATE OR REPLACE TABLE shopflow_sf1.dim_date AS
 SELECT
   d AS date_key,
   EXTRACT(YEAR FROM d) AS year,
@@ -9,16 +9,16 @@ SELECT
   EXTRACT(DAYOFWEEK FROM d) IN (1, 7) AS is_weekend
 FROM UNNEST(GENERATE_DATE_ARRAY('2024-01-01', '2025-12-31')) AS d;
 
-CREATE OR REPLACE TABLE shopflow.dim_customer AS
+CREATE OR REPLACE TABLE shopflow_sf1.dim_customer AS
 SELECT
   customer_id,
   COALESCE(country, 'Inconnu') AS country,
   segment,
   signup_date,
   customer_id = 0 AS is_guest
-FROM SRC.customers;
+FROM esigelec-big-data-ia.shopflow_sf1.customers;
 
-CREATE OR REPLACE TABLE shopflow.dim_product AS
+CREATE OR REPLACE TABLE shopflow_sf1.dim_product AS
 SELECT
   product_id, category, brand,
   price AS list_price,
@@ -26,19 +26,19 @@ SELECT
        WHEN price < 100 THEN '20-100'
        WHEN price < 500 THEN '100-500'
        ELSE '>500' END AS price_band
-FROM SRC.products;
+FROM esigelec-big-data-ia.shopflow_sf1.products;
 
-CREATE OR REPLACE TABLE shopflow.fact_sales AS
+CREATE OR REPLACE TABLE shopflow_sf1.fact_sales AS
 SELECT
   i.order_id, i.line_no,
   DATE(o.order_ts) AS date_key,
   o.customer_id, i.product_id, i.quantity, i.unit_price,
   ROUND(i.quantity * i.unit_price, 2) AS line_amount,
   o.status AS order_status
-FROM SRC.order_items AS i
-JOIN SRC.orders AS o USING (order_id);
+FROM esigelec-big-data-ia.shopflow_sf1.order_items AS i
+JOIN esigelec-big-data-ia.shopflow_sf1.orders AS o USING (order_id);
 
-CREATE OR REPLACE TABLE shopflow.fact_payments AS
+CREATE OR REPLACE TABLE shopflow_sf1.fact_payments AS
 SELECT
   payment_id, order_id,
   DATE(payment_ts) AS date_key,
@@ -46,4 +46,41 @@ SELECT
   is_fraud, fraud_scenario,
   chargeback_ts IS NOT NULL AS has_chargeback,
   TIMESTAMP_DIFF(chargeback_ts, payment_ts, DAY) AS chargeback_delay_days
-FROM SRC.payments;
+FROM esigelec-big-data-ia.shopflow_sf1.payments;
+
+
+
+
+
+-- B1 : CA mensuel 2025 par catégorie
+SELECT d.year_month, p.category, ROUND(SUM(f.line_amount), 2) AS ca
+FROM shopflow_sf1.fact_sales AS f
+JOIN shopflow_sf1.dim_date AS d USING (date_key)
+JOIN shopflow_sf1.dim_product AS p USING (product_id)
+WHERE d.year = 2025 AND f.order_status != 'cancelled'
+GROUP BY d.year_month, p.category
+ORDER BY d.year_month, ca DESC;
+
+-- B2 : taux de fraude par pays de carte (paiements autorisés), top 5 en montant
+SELECT
+  card_country,
+  COUNT(*) AS paiements,
+  COUNTIF(is_fraud) AS fraudes,
+  ROUND(100 * COUNTIF(is_fraud) / COUNT(*), 2) AS taux_nombre_pct,
+  ROUND(100 * SUM(IF(is_fraud, amount, 0)) / SUM(amount), 2) AS taux_montant_pct
+FROM shopflow_sf1.fact_payments
+WHERE status = 'authorized'
+GROUP BY card_country
+ORDER BY taux_montant_pct DESC
+LIMIT 5;
+
+-- B3 : profil par scénario de fraude
+SELECT
+  fraud_scenario,
+  COUNT(*) AS paiements,
+  ROUND(SUM(amount), 2) AS montant,
+  ROUND(100 * COUNTIF(has_chargeback) / COUNTIF(status = 'authorized'), 1) AS pct_retrofacturees,
+  ROUND(AVG(chargeback_delay_days), 1) AS delai_moyen_jours
+FROM shopflow_sf1.fact_payments
+WHERE is_fraud
+GROUP BY fraud_scenario;

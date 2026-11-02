@@ -34,3 +34,41 @@ SELECT payment_id, order_id, to_date(payment_ts) AS date_key, payment_ts, custom
        chargeback_ts IS NOT NULL AS has_chargeback,
        timestampdiff(DAY, payment_ts, chargeback_ts) AS chargeback_delay_days
 FROM payments;
+
+
+
+-- B1 : CA mensuel 2025 par catégorie
+SELECT d.year_month, p.category, ROUND(SUM(f.line_amount), 2) AS ca
+FROM workspace.shopflow.fact_sales AS f
+JOIN workspace.shopflow.dim_date AS d USING (date_key)
+JOIN workspace.shopflow.dim_product AS p USING (product_id)
+WHERE d.year = 2025 AND f.order_status != 'cancelled'
+GROUP BY d.year_month, p.category
+ORDER BY d.year_month, ca DESC;
+
+
+-- B2 : taux de fraude par pays de carte (paiements autorisés), top 5 en montant
+SELECT
+  card_country,
+  COUNT(*) AS paiements,
+  count_if(is_fraud) AS fraudes,
+  ROUND(100 * count_if(is_fraud) / COUNT(*), 2) AS taux_nombre_pct,
+  ROUND(100 * SUM(IF(is_fraud, amount, 0)) / NULLIF(SUM(amount), 0), 2) AS taux_montant_pct
+FROM  workspace.shopflow.fact_payments
+WHERE status = 'authorized'
+GROUP BY card_country
+ORDER BY taux_montant_pct DESC
+LIMIT 5;
+
+
+
+-- B3 : profil par scénario de fraude
+SELECT
+  fraud_scenario,
+  COUNT(*) AS paiements,
+  ROUND(SUM(amount), 2) AS montant,
+  ROUND(100 * count_if(has_chargeback) / NULLIF(count_if(status = 'authorized'), 0), 1) AS pct_retrofacturees,
+  ROUND(AVG(chargeback_delay_days), 1) AS delai_moyen_jours
+FROM  workspace.shopflow.fact_payments
+WHERE is_fraud
+GROUP BY fraud_scenario;
